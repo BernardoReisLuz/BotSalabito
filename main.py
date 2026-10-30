@@ -1,48 +1,12 @@
-import psycopg2
-import discord
-from discord.ext import commands
-import os
-from dotenv import load_dotenv
-from discord import app_commands
+import sqlite3
+
+import psycopg2; import discord; from discord.ext import commands;import os; from dotenv import load_dotenv; from discord import app_commands
+
+from banco import Database
 
 load_dotenv()
-conn = psycopg2.connect(
-    host="localhost",
-    port="5432",
-    database="escalacao",
-    user="postgres",
-    password=os.getenv("SENHA_POST")
-)
+db = Database()
 
-cursor = conn.cursor()
-cursor.execute("""CREATE TABLE IF NOT EXISTS times (
-    id SERIAL PRIMARY KEY,
-    time VARCHAR(50) ,
-    capitao VARCHAR(50) UNIQUE,
-    vice_capitao VARCHAR(50) UNIQUE,
-    sigla VARCHAR(10) UNIQUE
-);""") 
-
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS historico (
-    id SERIAL PRIMARY KEY,
-    rodada INTEGER,
-    jogador VARCHAR(100),
-    posicao VARCHAR(1),
-    time_sigla VARCHAR(50),
-    capitao_time VARCHAR(50),
-    vice_capitao_time VARCHAR(50),
-    torneio VARCHAR(100),
-
-    FOREIGN KEY (time_sigla) 
-        REFERENCES times(sigla),
-    FOREIGN KEY (capitao_time)
-        REFERENCES times(capitao),
-    FOREIGN KEY (vice_capitao_time)
-        REFERENCES times(vice_capitao)
-
-);""")
-conn.commit()
 # python -m pip install -U discord.py
 #python -m pip install python-dotenv
 # banco  rodada  , escalcao , time , Torneio 
@@ -50,7 +14,8 @@ conn.commit()
 intents = discord.Intents.all()
 bot = commands.Bot('!', intents=intents)
 botao_ativado = False
-torneio_nome = "Torneio Drift"; numero_titulares = 5 ; numero_reservas = numero_titulares + 2 
+
+torneio_nome = "Torneio Draft"; numero_titulares = 8 ; numero_reservas = numero_titulares + 2
 
 def somente_capitao(interaction: discord.Interaction ):
     cargo_capitao = discord.utils.get(interaction.user.roles, name="Capitao")
@@ -77,9 +42,11 @@ async def time_escalacao(interaction: discord.Interaction, numero_rodada:int):
     view = discord.ui.View()
     canal = interaction.channel
     nome_cargo = canal.name.replace("-", " ").title()
+    print(f"Nome do cargo: {nome_cargo}")
     
     cargo = discord.utils.get(interaction.guild.roles, name=f"{nome_cargo}")
     if cargo is None:
+        print(f"Cargo '{nome_cargo}' não encontrado.")
         await interaction.response.send_message("Cargo não encontrado.")
         return
 
@@ -96,8 +63,8 @@ async def time_escalacao(interaction: discord.Interaction, numero_rodada:int):
     )
         
  #==============================adiciona imagem=========================================
-    embed.set_image(url=f"attachment://Escudo_oficial_lbp.jpg")
-    imagem = discord.File("Escudo_oficial_lbp.jpg","Escudo_oficial_lbp.jpg")
+    embed.set_image(url=f"attachment://Logo Draft.jpg")
+    imagem = discord.File("Logo Draft.jpg","Logo Draft.jpg")
     
 #================================cria botao=========================================
     async def cria_botao(membrinhos):
@@ -145,19 +112,16 @@ async def time_escalacao(interaction: discord.Interaction, numero_rodada:int):
            return
            
         # vai mandar a escalacao para o banco de dados
-       cursor = conn.cursor()
-       cursor.execute("SELECT sigla FROM times WHERE time = %s", (nome_cargo,))
-       time_sigla = cursor.fetchone()
-       if time_sigla is  None:
+       r_time_sigla = db.execute_query("SELECT sigla FROM timeInfo WHERE time = ?", (nome_cargo,))
+       print("r_time_sigla", r_time_sigla)
+       
+       if r_time_sigla is  None:
            await interaction.response.send_message(f"Não foi possível encontrar a sigla do time {nome_cargo} no banco de dados.", ephemeral=True)
            return
-
+       time_sigla = r_time_sigla[0][0]
        for jogadores in escalados:
-           cursor.execute("""INSERT INTO historico (rodada, jogador, posicao, time_sigla, torneio) VALUES (%s, %s, %s, %s, %s)""", (numero_rodada, jogadores, escalados.index(jogadores)+1, time_sigla, torneio_nome))
+           db.insert_query("""INSERT INTO escalacao (rodada, jogador, posicao, time_sigla, torneio_nome) VALUES (?, ?, ?, ?, ?)""", (numero_rodada, jogadores, escalados.index(jogadores)+1, time_sigla, torneio_nome))
 
-
-       conn.commit()
-       cursor.close()
        view.clear_items() 
        await interaction.response.edit_message(embed=embed,view=view)
 
@@ -194,23 +158,22 @@ async def time_escalacao(interaction: discord.Interaction, numero_rodada:int):
 @bot.tree.command(description="Mostra o confronto entre os times")
 async def partida(interaction: discord.Interaction, numero_rodada:int, time_a:str, time_b:str):
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT jogador FROM historico WHERE time_sigla = %s AND rodada = %s ORDER BY posicao", (time_a, numero_rodada))
-    resultado = cursor.fetchall()
+    resultado =db.execute_query("SELECT jogador FROM escalacao WHERE time_sigla = ? AND rodada = ? ORDER BY posicao", (time_a, numero_rodada))
+    
 
-    cursor.execute("SELECT jogador FROM historico WHERE time_sigla = %s AND rodada = %s", (time_b, numero_rodada))
-    resultadob = cursor.fetchall()
-    cursor.execute("SELECT capitao, vice_capitao FROM times WHERE sigla = %s",(time_a,))
-    capitoes_a = cursor.fetchone()
-    cursor.execute("SELECT capitao, vice_capitao FROM times WHERE sigla = %s",(time_b,))
-    capitoes_b = cursor.fetchone()
+    resultadob =db.execute_query("SELECT jogador FROM escalacao WHERE time_sigla = ? AND rodada = ?", (time_b, numero_rodada))
+    
+    capitoes_a =db.execute_query("SELECT capitao, vice_capitao FROM timeInfo WHERE sigla = ?",(time_a,))
+    
+    capitoes_b = db.execute_query("SELECT capitao, vice_capitao FROM timeInfo WHERE sigla = ?",(time_b,))
+    
     if capitoes_a:
-        capintao_a = capitoes_a[0]
-        vicepintao_a = capitoes_a[1]
+        capintao_a = capitoes_a[0][0]
+        vicepintao_a = capitoes_a[0][1]
         
     if capitoes_b:
-        capintao_b = capitoes_b[0]
-        vicepintao = capitoes_b[1]
+        capintao_b = capitoes_b[0][0]
+        vicepintao_b = capitoes_b[0][1]
         
     escalacao_a =[linha[0] for linha in resultado];escalacao_b =[linha[0] for linha in resultadob]
 
@@ -234,7 +197,7 @@ async def partida(interaction: discord.Interaction, numero_rodada:int, time_a:st
     )
     confronto.append("")
     confronto.append("**CAPITÃES**")
-    confronto.append(f"**{time_a.upper()}** : {capintao_a} e {vicepintao_a} \n" + f"**{time_b.upper()}** :{capintao_b} e {vicepintao}")
+    confronto.append(f"**{time_a.upper()}** : {capintao_a} e {vicepintao_a} \n" + f"**{time_b.upper()}** :{capintao_b} e {vicepintao_b}")
     
 
     await interaction.response.send_message(
@@ -242,27 +205,31 @@ async def partida(interaction: discord.Interaction, numero_rodada:int, time_a:st
     )
 
 @bot.tree.command(description="Adicionar time ao banco de dados SIGLA SER EM MINUSCULO")
-async def addtime(interaction: discord.Interaction, time:str, capitao:str, vice_capitao:str, sigla:str):
-    cursor = conn.cursor()
+async def add_time(interaction: discord.Interaction, time:str, capitao:str, vice_capitao:str, sigla:str):
+    
     try:
-        cursor.execute("INSERT INTO times (time, capitao, vice_capitao, sigla) VALUES (%s, %s, %s, %s)", (time, capitao, vice_capitao, sigla))
-        conn.commit()
+        db.insert_query("INSERT INTO timeInfo (time, capitao, vice_capitao, sigla) VALUES (?, ?, ?, ?)", (time, capitao, vice_capitao, sigla))
+
         await interaction.response.send_message(f"Time {time} adicionado com sucesso!", ephemeral=True)
-    except psycopg2.IntegrityError:
-        conn.rollback()
+    except sqlite3.IntegrityError:
         await interaction.response.send_message(f"Erro: O time {time} ou a sigla {sigla} já existe no banco de dados.", ephemeral=True)
-    finally:
-        cursor.close()
+    
 
 @bot.tree.command(description="Remover time do banco de dados")
-async def removetime(interaction: discord.Interaction, sigla:str):
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM times WHERE sigla = %s", (sigla,))
-    if cursor.rowcount > 0:
-        conn.commit()
+async def remove_time(interaction: discord.Interaction, sigla:str):
+
+    db.insert_query("DELETE FROM timeInfo WHERE sigla = ?", (sigla,))
+    if db.cursor.rowcount > 0:
+        db.conn.commit()
         await interaction.response.send_message(f"Time com sigla {sigla} removido com sucesso!", ephemeral=True)
     else:
         await interaction.response.send_message(f"Erro: Nenhum time encontrado com a sigla {sigla}.", ephemeral=True)
-    cursor.close()
+    db.close()
     
+@bot.tree.command(description="Limpar todos os dados das tabelas")
+async def limpar_tabela(interaction: discord.Interaction):
+    db.limpar_tabela("escalacao")
+    db.limpar_tabela("timeInfo")
+    await interaction.response.send_message("Todas as tabelas foram limpas com sucesso!", ephemeral=True)
+
 bot.run(os.getenv('BOT_TOKEN'))
